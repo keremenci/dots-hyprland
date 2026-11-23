@@ -44,8 +44,36 @@ Item {
     property int windowDraggingZ: 99999
     property real workspaceSpacing: 5
 
-    property int draggingFromWorkspace: -1
-    property int draggingTargetWorkspace: -1
+    // Normal workspaces are keyed by their numeric id; special workspaces by their name ("special:music")
+    property var draggingFromWorkspace: -1
+    property var draggingTargetWorkspace: -1
+
+    // Special workspaces have no id on Hyprland 0.57 and only exist while they hold windows.
+    // They get extra rows below the grid, one cell each.
+    // Taken from the window list: HyprlandData.workspaces drops workspaces without a numeric id.
+    readonly property var specialWorkspaces: [...new Set(HyprlandData.windowList
+        .map(w => w.workspace?.name)
+        .filter(name => root.isSpecialName(name)))]
+        .sort()
+    readonly property int specialRows: Math.ceil(specialWorkspaces.length / Config.options.overview.columns)
+    readonly property int totalRows: Config.options.overview.rows + specialRows
+    readonly property string activeSpecialName: monitorData?.specialWorkspace?.name ?? ""
+
+    function isSpecialName(name) {
+        return typeof name === "string" && name.startsWith("special:");
+    }
+    function workspaceKey(ws) {
+        return isSpecialName(ws?.name) ? ws.name : ws?.id;
+    }
+    function getSpecialRow(name) {
+        return Config.options.overview.rows + Math.floor(specialWorkspaces.indexOf(name) / Config.options.overview.columns);
+    }
+    function getSpecialColumn(name) {
+        return specialWorkspaces.indexOf(name) % Config.options.overview.columns;
+    }
+    function workspaceLua(key) {
+        return isSpecialName(key) ? `"${key}"` : key;
+    }
 
     implicitWidth: overviewBackground.implicitWidth + Appearance.sizes.elevationMargin * 2
     implicitHeight: overviewBackground.implicitHeight + Appearance.sizes.elevationMargin * 2
@@ -114,7 +142,7 @@ Item {
                             property bool workspaceAtLeft: colIndex === 0
                             property bool workspaceAtRight: colIndex === Config.options.overview.columns - 1
                             property bool workspaceAtTop: row.index === 0
-                            property bool workspaceAtBottom: row.index === Config.options.overview.rows - 1
+                            property bool workspaceAtBottom: row.index === root.totalRows - 1
                             topLeftRadius: (workspaceAtLeft && workspaceAtTop) ? root.largeWorkspaceRadius : root.smallWorkspaceRadius
                             topRightRadius: (workspaceAtRight && workspaceAtTop) ? root.largeWorkspaceRadius : root.smallWorkspaceRadius
                             bottomLeftRadius: (workspaceAtLeft && workspaceAtBottom) ? root.largeWorkspaceRadius : root.smallWorkspaceRadius
@@ -164,6 +192,85 @@ Item {
                     }
                 }
             }
+
+            Repeater { // Special workspace rows
+                model: root.specialRows
+                delegate: Row {
+                    id: specialRow
+                    required property int index
+                    spacing: workspaceSpacing
+
+                    Repeater {
+                        model: root.specialWorkspaces.slice(specialRow.index * Config.options.overview.columns,
+                            (specialRow.index + 1) * Config.options.overview.columns)
+                        Rectangle { // Special workspace
+                            id: specialWorkspace
+                            required property int index
+                            required property string modelData
+                            property string shortName: modelData.slice("special:".length)
+                            property bool isActive: root.activeSpecialName === modelData
+                            property color defaultWorkspaceColor: Appearance.colors.colSurfaceContainerLow
+                            property color hoveredWorkspaceColor: ColorUtils.mix(defaultWorkspaceColor, Appearance.colors.colLayer1Hover, 0.1)
+                            property color hoveredBorderColor: Appearance.colors.colLayer2Hover
+                            property bool hoveredWhileDragging: false
+
+                            implicitWidth: root.workspaceImplicitWidth
+                            implicitHeight: root.workspaceImplicitHeight
+                            color: hoveredWhileDragging ? hoveredWorkspaceColor : defaultWorkspaceColor
+                            property bool workspaceAtLeft: index === 0
+                            property bool workspaceAtRight: index === Config.options.overview.columns - 1
+                            property bool workspaceAtBottom: specialRow.index === root.specialRows - 1
+                            topLeftRadius: root.smallWorkspaceRadius
+                            topRightRadius: root.smallWorkspaceRadius
+                            bottomLeftRadius: (workspaceAtLeft && workspaceAtBottom) ? root.largeWorkspaceRadius : root.smallWorkspaceRadius
+                            bottomRightRadius: (workspaceAtRight && workspaceAtBottom) ? root.largeWorkspaceRadius : root.smallWorkspaceRadius
+                            border.width: 2
+                            border.color: hoveredWhileDragging ? hoveredBorderColor
+                                : isActive ? root.activeBorderColor : "transparent"
+
+                            StyledText {
+                                anchors.centerIn: parent
+                                width: parent.width - 10
+                                text: specialWorkspace.shortName
+                                elide: Text.ElideRight
+                                font {
+                                    pixelSize: root.workspaceNumberSize * root.scale * 0.45
+                                    weight: Font.DemiBold
+                                    family: Appearance.font.family.expressive
+                                }
+                                color: ColorUtils.transparentize(Appearance.colors.colOnLayer1, 0.8)
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                acceptedButtons: Qt.LeftButton
+                                onPressed: {
+                                    if (root.draggingTargetWorkspace === -1) {
+                                        GlobalStates.overviewOpen = false
+                                        if (!specialWorkspace.isActive)
+                                            Hyprland.dispatch(`hl.dsp.workspace.toggle_special("${specialWorkspace.shortName}")`)
+                                    }
+                                }
+                            }
+
+                            DropArea {
+                                anchors.fill: parent
+                                onEntered: {
+                                    root.draggingTargetWorkspace = specialWorkspace.modelData
+                                    if (root.draggingFromWorkspace == root.draggingTargetWorkspace) return;
+                                    specialWorkspace.hoveredWhileDragging = true
+                                }
+                                onExited: {
+                                    specialWorkspace.hoveredWhileDragging = false
+                                    if (root.draggingTargetWorkspace == specialWorkspace.modelData) root.draggingTargetWorkspace = -1
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Item { // Windows & focused workspace indicator
@@ -180,7 +287,7 @@ Item {
                             const address = `0x${toplevel.HyprlandToplevel?.address}`
                             var win = windowByAddress[address]
                             const inWorkspaceGroup = (root.workspaceGroup * root.workspacesShown < win?.workspace?.id && win?.workspace?.id <= (root.workspaceGroup + 1) * root.workspacesShown)
-                            return inWorkspaceGroup;
+                            return inWorkspaceGroup || root.specialWorkspaces.includes(win?.workspace?.name);
                         })
                     }
                 }
@@ -199,8 +306,10 @@ Item {
                     property bool atInitPosition: (initX == x && initY == y)
 
                     // Offset on the canvas
-                    property int workspaceColIndex: getWsColumn(windowData?.workspace.id)
-                    property int workspaceRowIndex: getWsRow(windowData?.workspace.id)
+                    property string workspaceName: windowData?.workspace?.name ?? ""
+                    property bool inSpecialWorkspace: root.isSpecialName(workspaceName)
+                    property int workspaceColIndex: inSpecialWorkspace ? root.getSpecialColumn(workspaceName) : getWsColumn(windowData?.workspace.id)
+                    property int workspaceRowIndex: inSpecialWorkspace ? root.getSpecialRow(workspaceName) : getWsRow(windowData?.workspace.id)
                     xOffset: (root.workspaceImplicitWidth + workspaceSpacing) * workspaceColIndex
                     yOffset: (root.workspaceImplicitHeight + workspaceSpacing) * workspaceRowIndex
                     property real xWithinWorkspaceWidget: Math.max((windowData?.at[0] - (monitor?.x ?? 0) - monitorData?.reserved[0]) * root.scale, 0)
@@ -211,7 +320,7 @@ Item {
                     property bool workspaceAtLeft: workspaceColIndex === 0
                     property bool workspaceAtRight: workspaceColIndex === Config.options.overview.columns - 1
                     property bool workspaceAtTop: workspaceRowIndex === 0
-                    property bool workspaceAtBottom: workspaceRowIndex === Config.options.overview.rows - 1
+                    property bool workspaceAtBottom: workspaceRowIndex === root.totalRows - 1
                     property bool workspaceAtTopLeft: (workspaceAtLeft && workspaceAtTop) 
                     property bool workspaceAtTopRight: (workspaceAtRight && workspaceAtTop) 
                     property bool workspaceAtBottomLeft: (workspaceAtLeft && workspaceAtBottom) 
@@ -252,7 +361,7 @@ Item {
                         acceptedButtons: Qt.LeftButton | Qt.MiddleButton
                         drag.target: parent
                         onPressed: (mouse) => {
-                            root.draggingFromWorkspace = windowData?.workspace.id
+                            root.draggingFromWorkspace = root.workspaceKey(windowData?.workspace)
                             window.pressed = true
                             window.Drag.active = true
                             window.Drag.source = window
@@ -265,8 +374,8 @@ Item {
                             window.pressed = false
                             window.Drag.active = false
                             root.draggingFromWorkspace = -1
-                            if (targetWorkspace !== -1 && targetWorkspace !== windowData?.workspace.id) {
-                                Hyprland.dispatch(`hl.dsp.window.move({ workspace = ${targetWorkspace}, follow = false, window = "address:${window.windowData?.address}" })`)
+                            if (targetWorkspace !== -1 && targetWorkspace !== root.workspaceKey(windowData?.workspace)) {
+                                Hyprland.dispatch(`hl.dsp.window.move({ workspace = ${root.workspaceLua(targetWorkspace)}, follow = false, window = "address:${window.windowData?.address}" })`)
                                 updateWindowPosition.restart()
                             }
                             else {
@@ -314,7 +423,7 @@ Item {
                 property bool workspaceAtLeft: colIndex === 0
                 property bool workspaceAtRight: colIndex === Config.options.overview.columns - 1
                 property bool workspaceAtTop: rowIndex === 0
-                property bool workspaceAtBottom: rowIndex === Config.options.overview.rows - 1
+                property bool workspaceAtBottom: rowIndex === root.totalRows - 1
                 topLeftRadius: (workspaceAtLeft && workspaceAtTop) ? root.largeWorkspaceRadius : root.smallWorkspaceRadius
                 topRightRadius: (workspaceAtRight && workspaceAtTop) ? root.largeWorkspaceRadius : root.smallWorkspaceRadius
                 bottomLeftRadius: (workspaceAtLeft && workspaceAtBottom) ? root.largeWorkspaceRadius : root.smallWorkspaceRadius
