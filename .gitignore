@@ -15,3 +15,6 @@ __pycache__/
 
 # Emacs auto backup file
 *~
+
+# Installer bookkeeping, per machine
+/dots/.config/illogical-impulse/installed_*

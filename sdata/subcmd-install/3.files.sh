@@ -37,6 +37,25 @@ function auto_backup_configs(){
     printf "${STY_BLUE}Backup into \"${BACKUP_DIR}\" finished.${STY_RST}\n"
   fi
 }
+function abort_if_symlinked_targets(){
+  # rsync into a symlinked target writes through the link, e.g. into another dotfiles repo.
+  # Remove such links first, or set II_ALLOW_SYMLINKED_TARGETS=true to proceed anyway.
+  [[ "${II_ALLOW_SYMLINKED_TARGETS}" == true ]] && return 0
+  local -a linked=()
+  local src target i
+  for src in "dots/.config:$XDG_CONFIG_HOME" "dots/.local/share:$XDG_DATA_HOME"; do
+    for i in $(ls -A "${src%%:*}"); do
+      target="${src#*:}/$i"
+      [[ -L "$target" ]] && linked+=("$target -> $(readlink "$target")")
+    done
+  done
+  [[ ${#linked[@]} -eq 0 ]] && return 0
+  printf "${STY_RED}[$0]: These install targets are symlinks; copying would write through them:\n"
+  printf '  %s\n' "${linked[@]}"
+  printf "Remove the links (e.g. leftover links from other dotfiles) and rerun,\n"
+  printf "or set II_ALLOW_SYMLINKED_TARGETS=true if this is intended.${STY_RST}\n"
+  exit 1
+}
 function gen_firstrun(){
   x mkdir -p "$(dirname ${FIRSTRUN_FILE})"
   x touch "${FIRSTRUN_FILE}"
@@ -214,6 +233,8 @@ esac
 
 showfun auto_update_git_submodule
 v auto_update_git_submodule
+
+abort_if_symlinked_targets
 
 # Backup
 if [[ ! "${SKIP_BACKUP}" == true ]]; then auto_backup_configs; fi
