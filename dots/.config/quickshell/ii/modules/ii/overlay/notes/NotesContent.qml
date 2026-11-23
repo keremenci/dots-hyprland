@@ -261,6 +261,12 @@ OverlayBackground {
     FileView {
         id: noteFile
         path: Qt.resolvedUrl(Directories.notesPath)
+        // The overlay and the left sidebar both edit this file; pick up the other one's saves
+        watchChanges: true
+        onFileChanged: {
+            if (!textInput.activeFocus)
+                noteFile.reload();
+        }
         onLoaded: {
             root.content = noteFile.text();
             if (root.content !== root.content) {

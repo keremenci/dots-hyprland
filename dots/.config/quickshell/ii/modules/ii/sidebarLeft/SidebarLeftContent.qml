@@ -19,6 +19,8 @@ Item {
     property var tabButtonList: [
         ...(root.aiChatEnabled ? [{"icon": "neurology", "name": Translation.tr("Intelligence")}] : []),
         ...(root.translatorEnabled ? [{"icon": "translate", "name": Translation.tr("Translator")}] : []),
+        {"icon": "work", "name": Translation.tr("Work")},
+        {"icon": "sticky_note_2", "name": Translation.tr("Notes")},
         ...((root.animeEnabled && !root.animeCloset) ? [{"icon": "bookmark_heart", "name": Translation.tr("Anime")}] : [])
     ]
     property int tabCount: swipeView.count
@@ -86,6 +88,8 @@ Item {
                 contentChildren: [
                     ...(root.aiChatEnabled ? [aiChat.createObject()] : []),
                     ...(root.translatorEnabled ? [translator.createObject()] : []),
+                    workPanel.createObject(),
+                    notesTab.createObject(),
                     ...((root.tabButtonList.length === 0 || (!root.aiChatEnabled && !root.translatorEnabled && root.animeCloset)) ? [placeholder.createObject()] : []),
                     ...(root.animeEnabled ? [anime.createObject()] : []),
                 ]
@@ -99,6 +103,14 @@ Item {
         Component {
             id: translator
             Translator {}
+        }
+        Component {
+            id: workPanel
+            WorkPanel {}
+        }
+        Component {
+            id: notesTab
+            NotesTab {}
         }
         Component {
             id: anime
