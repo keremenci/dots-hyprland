@@ -52,8 +52,17 @@ end
 
 --# Groups
 rebind("SUPER + G", hl.dsp.group.toggle(), { description = "Group: Toggle" })
-rebind("SUPER + Tab", hl.dsp.group.next(), { description = "Group: Next window" })
-rebind("SUPER + SHIFT + Tab", hl.dsp.group.prev())
+-- Super+Tab cycles stacked windows: the monocle scratchpad's windows when in it, group tabs elsewhere
+local function in_monocle_scratchpad()
+    local w = hl.get_active_window()
+    return w ~= nil and w.workspace ~= nil and w.workspace.name == "special:special"
+end
+rebind("SUPER + Tab", function()
+    hl.dispatch(in_monocle_scratchpad() and hl.dsp.layout("cyclenext") or hl.dsp.group.next())
+end, { description = "Window: Next stacked (group tab / scratchpad)" })
+rebind("SUPER + SHIFT + Tab", function()
+    hl.dispatch(in_monocle_scratchpad() and hl.dsp.layout("cycleprev") or hl.dsp.group.prev())
+end, { description = "Window: Previous stacked (group tab / scratchpad)" })
 rebind("SUPER + Next", hl.dsp.group.next())
 rebind("SUPER + Prior", hl.dsp.group.prev())
 rebind("SUPER + mouse:276", hl.dsp.group.next())
@@ -70,9 +79,9 @@ hl.bind("ALT + SHIFT + Tab", hl.dsp.focus({ workspace = "m-1" }))
 rebind("SUPER + CTRL + Down", hl.dsp.focus({ workspace = "empty" }), { description = "Workspace: Next empty" })
 
 --# Scratchpads
-local scratchpads = { "F1", "F2", "F3", "F4" }
-local scratchnames = { "special", "music", "slack", "discord" }
-for i = 1, 4 do
+local scratchpads = { "F1", "F2", "F3", "F4", "F5" }
+local scratchnames = { "special", "music", "slack", "beekeeper", "discord" }
+for i = 1, #scratchpads do
     hl.bind("SUPER + " .. scratchpads[i], hl.dsp.workspace.toggle_special(scratchnames[i]))
     hl.bind("SUPER + SHIFT + " .. scratchpads[i],
         hl.dsp.window.move({ workspace = "special:" .. scratchnames[i], follow = false }))

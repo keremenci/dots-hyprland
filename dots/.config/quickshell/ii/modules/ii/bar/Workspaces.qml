@@ -33,6 +33,17 @@ ButtonMouseArea {
     property int workspaceIndexInGroup: (monitor?.activeWorkspace?.id - 1) % wsModel.shownCount
     property real specialTextSize: workspaceButtonWidth * 0.5
 
+    // The general scratchpad uses the monocle layout (one window visible at a time), so its pill
+    // shows the visible window's position, e.g. "special 2/3". Monocle cycles in hyprctl clients order.
+    readonly property var scratchpadWindows: HyprlandData.windowList.filter(w => w.workspace?.name === "special:special")
+    readonly property int scratchpadIndex: scratchpadWindows.findIndex(w => w.focusHistoryID === 0)
+    readonly property string specialPillText: {
+        const name = wsModel.specialWorkspaceName;
+        const count = scratchpadWindows.length;
+        if (name !== "special" || count < 2) return name;
+        return scratchpadIndex >= 0 ? `${name}  ${scratchpadIndex + 1}/${count}` : `${name}  ${count}`;
+    }
+
     Layout.alignment: vertical ? Qt.AlignHCenter : Qt.AlignVCenter
     Layout.fillWidth: vertical
     Layout.fillHeight: !vertical
@@ -308,7 +319,7 @@ ButtonMouseArea {
             StyledText {
                 id: specialWsText
                 anchors.centerIn: parent
-                text: (!root.vertical ? wsModel.specialWorkspaceName : "S")
+                text: (!root.vertical ? root.specialPillText : "S")
                 color: Appearance.colors.colOnPrimary
                 font.pixelSize: root.specialTextSize
             }
