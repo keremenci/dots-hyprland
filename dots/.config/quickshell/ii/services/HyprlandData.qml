@@ -22,6 +22,14 @@ Singleton {
     property var monitors: []
     property var layers: ({})
 
+    // Last raw hyprctl output per query; identical output skips reassignment (and the rebinding it causes)
+    property var lastOutput: ({})
+    function changed(key, text) {
+        if (root.lastOutput[key] === text) return false;
+        root.lastOutput[key] = text;
+        return true;
+    }
+
     // Convenient stuff
 
     function toplevelsForWorkspace(workspace) {
@@ -70,6 +78,16 @@ Singleton {
         updateWorkspaces();
     }
 
+    // Hyprland fires several events per action (a workspace switch sends 4). Coalesce a burst into
+    // one refresh shortly after the first event instead of 4 hyprctl calls per event.
+    // This also covers events that arrive while a query is still running, which used to be dropped.
+    Timer {
+        id: refreshTimer
+        interval: 50
+        repeat: false
+        onTriggered: root.updateAll()
+    }
+
     function biggestWindowForWorkspace(workspaceId) {
         const windowsInThisWorkspace = HyprlandData.windowList.filter(w => w.workspace.id == workspaceId);
         return windowsInThisWorkspace.reduce((maxWin, win) => {
@@ -89,7 +107,7 @@ Singleton {
         function onRawEvent(event) {
             // console.log("Hyprland raw event:", event.name);
             if (["openlayer", "closelayer", "screencast"].includes(event.name)) return;
-            updateAll()
+            if (!refreshTimer.running) refreshTimer.start();
         }
     }
 
@@ -99,6 +117,7 @@ Singleton {
         stdout: StdioCollector {
             id: clientsCollector
             onStreamFinished: {
+                if (!root.changed("clients", clientsCollector.text)) return;
                 root.windowList = JSON.parse(clientsCollector.text)
                 let tempWinByAddress = {};
                 for (var i = 0; i < root.windowList.length; ++i) {
@@ -117,6 +136,7 @@ Singleton {
         stdout: StdioCollector {
             id: monitorsCollector
             onStreamFinished: {
+                if (!root.changed("monitors", monitorsCollector.text)) return;
                 root.monitors = JSON.parse(monitorsCollector.text);
             }
         }
@@ -128,6 +148,7 @@ Singleton {
         stdout: StdioCollector {
             id: layersCollector
             onStreamFinished: {
+                if (!root.changed("layers", layersCollector.text)) return;
                 root.layers = JSON.parse(layersCollector.text);
             }
         }
@@ -139,6 +160,7 @@ Singleton {
         stdout: StdioCollector {
             id: workspacesCollector
             onStreamFinished: {
+                if (!root.changed("workspaces", workspacesCollector.text)) return;
                 var rawWorkspaces = JSON.parse(workspacesCollector.text);
                 // Filter out invalid workspace ids (e.g. lock-screen temp workspace 2147483647 - N)
                 root.workspaces = rawWorkspaces.filter(ws => ws.id >= 1 && ws.id <= 100);
@@ -159,6 +181,7 @@ Singleton {
         stdout: StdioCollector {
             id: activeWorkspaceCollector
             onStreamFinished: {
+                if (!root.changed("activeWorkspace", activeWorkspaceCollector.text)) return;
                 root.activeWorkspace = JSON.parse(activeWorkspaceCollector.text);
             }
         }
