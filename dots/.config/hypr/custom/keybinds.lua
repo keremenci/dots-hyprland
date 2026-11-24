@@ -86,3 +86,6 @@ for i = 1, #scratchpads do
     hl.bind("SUPER + SHIFT + " .. scratchpads[i],
         hl.dsp.window.move({ workspace = "special:" .. scratchnames[i], follow = false }))
 end
+
+--# TOTP codes from Ente Auth (synced into the keyring, see custom/scripts/totp)
+hl.bind("SUPER + SHIFT + O", hl.dsp.exec_cmd("~/.config/hypr/custom/scripts/totp pick"), { description = "Utilities: Copy a TOTP code" })

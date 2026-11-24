@@ -1,0 +1,185 @@
+#!/usr/bin/env -S python3 -I
+"""TOTP codes from Ente Auth, synced into the login keyring.
+
+  totp sync           read Ente Auth's otpauth:// links from the official `ente` CLI (stdout,
+                      never a file), copy them into the keyring, and drop entries removed in Ente
+  totp list           list entry names
+  totp code QUERY     print the current code of the entry whose name contains QUERY
+  totp pick           fuzzel picker: copy a code to the clipboard
+
+One-time setup: ente account login --app auth   (ENTE_ACCOUNT=NAME picks a non-default account)
+Secrets only live in the keyring (service=ente-totp); the export never touches the disk.
+"""
+import base64
+import hashlib
+import hmac
+import os
+import struct
+import subprocess
+import sys
+import time
+from urllib.parse import parse_qs, unquote, urlparse
+
+SERVICE = "ente-totp"
+
+
+def die(msg, notify=False):
+    if notify:
+        subprocess.run(["notify-send", "-a", "TOTP", "-u", "critical", "TOTP", msg])
+    print(f"totp: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+# ---------- otpauth parsing and code generation ----------
+
+def parse_uri(uri):
+    u = urlparse(uri.strip())
+    if u.scheme != "otpauth" or u.netloc != "totp":
+        return None
+    q = {k: v[0] for k, v in parse_qs(u.query).items()}
+    if "secret" not in q:
+        return None
+    label = unquote(u.path.lstrip("/"))
+    issuer = q.get("issuer", "")
+    account = label.split(":", 1)[1] if ":" in label else label
+    issuer = issuer or (label.split(":", 1)[0] if ":" in label else "")
+    name = f"{issuer} ({account})" if issuer and account else (issuer or account or "unnamed")
+    return name.strip()
+
+
+def totp(uri, at=None):
+    q = {k: v[0] for k, v in parse_qs(urlparse(uri).query).items()}
+    secret = q["secret"].replace(" ", "").upper()
+    key = base64.b32decode(secret + "=" * (-len(secret) % 8))
+    digits = int(q.get("digits", 6))
+    period = int(q.get("period", 30))
+    algo = {"SHA1": hashlib.sha1, "SHA256": hashlib.sha256, "SHA512": hashlib.sha512}[q.get("algorithm", "SHA1").upper()]
+    now = time.time() if at is None else at
+    mac = hmac.new(key, struct.pack(">Q", int(now // period)), algo).digest()
+    off = mac[-1] & 0x0F
+    code = (struct.unpack(">I", mac[off:off + 4])[0] & 0x7FFFFFFF) % (10 ** digits)
+    return str(code).zfill(digits), period - int(now % period)
+
+
+# ---------- keyring (secret-tool; secrets go through stdin/stdout, never argv) ----------
+
+def keyring_names():
+    # secret-tool prints attributes on stderr (and the secrets on stdout, which we ignore)
+    out = subprocess.run(["secret-tool", "search", "--all", "--unlock", "service", SERVICE],
+                         capture_output=True, text=True).stderr
+    return sorted({line.split("=", 1)[1].strip() for line in out.splitlines()
+                   if line.startswith("attribute.name = ")})
+
+
+def keyring_get(name):
+    r = subprocess.run(["secret-tool", "lookup", "service", SERVICE, "name", name], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def keyring_set(name, uri):
+    subprocess.run(["secret-tool", "store", "--label", f"Ente TOTP: {name}", "service", SERVICE, "name", name],
+                   input=uri, text=True, check=True)
+
+
+def keyring_del(name):
+    subprocess.run(["secret-tool", "clear", "service", SERVICE, "name", name], check=False)
+
+
+# ---------- commands ----------
+
+def cmd_sync():
+    cmd = ["ente", "auth", "export", "--plaintext", "--output", "-", "--no-input"]
+    if os.environ.get("ENTE_ACCOUNT"):
+        cmd += ["--account", os.environ["ENTE_ACCOUNT"]]
+    # Run from $HOME: the CLI refuses network commands from a dir holding a foreign config file
+    r = subprocess.run(cmd, cwd=os.path.expanduser("~"), capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"ente auth export failed (exit {r.returncode}):\n" + r.stderr[-400:])
+    lines = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+
+    entries, skipped = {}, 0
+    for line in lines:
+        name = parse_uri(line)
+        if name is None:
+            skipped += 1
+            continue
+        base, n = name, 2
+        while name in entries:  # duplicate names get a suffix
+            name, n = f"{base} #{n}", n + 1
+        entries[name] = line
+    if not entries:
+        die(f"export had no TOTP entries ({skipped} lines skipped); keyring left unchanged")
+
+    old = set(keyring_names())
+    changed = 0
+    for name, uri in entries.items():
+        if keyring_get(name) != uri:
+            keyring_set(name, uri)
+            changed += 1
+    removed = old - set(entries)
+    for name in removed:
+        keyring_del(name)
+    print(f"totp: {len(entries)} entries ({changed} added/updated, {len(removed)} removed"
+          + (f", {skipped} non-TOTP lines skipped" if skipped else "") + ")")
+
+
+def find(query):
+    names = keyring_names()
+    exact = [n for n in names if n.lower() == query.lower()]
+    hits = exact or [n for n in names if query.lower() in n.lower()]
+    if not hits:
+        die(f"no entry matching '{query}' (try: totp list)")
+    if len(hits) > 1:
+        die(f"'{query}' matches several entries: " + ", ".join(hits))
+    return hits[0]
+
+
+def cmd_code(query, min_left=0):
+    uri = keyring_get(find(query))
+    if uri is None:
+        die("keyring locked or entry missing")
+    code, left = totp(uri)
+    if left < min_left:  # about to expire: wait for the next one
+        time.sleep(left)
+        code, left = totp(uri)
+    print(code)
+
+
+def cmd_pick():
+    names = keyring_names()
+    if not names:
+        die("no entries; run `totp sync` first", notify=True)
+    r = subprocess.run(["fuzzel", "--dmenu", "--prompt", "󰦝 TOTP  "], input="\n".join(names), capture_output=True, text=True)
+    name = r.stdout.strip()
+    if r.returncode != 0 or not name:
+        return
+    uri = keyring_get(name)
+    if uri is None:
+        die("keyring locked or entry missing", notify=True)
+    code, left = totp(uri)
+    if left < 3:
+        time.sleep(left)
+        code, left = totp(uri)
+    subprocess.run(["wl-copy"], input=code, text=True)
+    subprocess.run(["notify-send", "-a", "TOTP", "-t", "3000", f"Copied code for {name}", f"Valid for {left}s"])
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help"):
+        print(__doc__.strip())
+        return
+    cmd = argv[1]
+    if cmd == "sync":
+        cmd_sync()
+    elif cmd == "list":
+        print("\n".join(keyring_names()))
+    elif cmd == "code" and len(argv) >= 3:
+        cmd_code(" ".join(argv[2:]), min_left=int(os.environ.get("TOTP_MIN_LEFT", "0")))
+    elif cmd == "pick":
+        cmd_pick()
+    else:
+        die(f"unknown command; see: {argv[0]} --help")
+
+
+if __name__ == "__main__":
+    main(sys.argv)
